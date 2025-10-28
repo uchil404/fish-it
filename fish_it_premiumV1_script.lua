@@ -1,10 +1,55 @@
--- Rayfield UI
-local success, Rayfield = pcall(function()
-    return loadstring(game:HttpGet("https://raw.githubusercontent.com/shlexware/Rayfield/main/source"))()
-end)
-if not success then
-    warn("Failed to load Rayfield UI. Retrying with backup source...")
-    Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/shlexware/Rayfield/main/source"))()
+-- Rayfield UI - try multiple loader sources and several http methods for executor compatibility
+local function fetchUrl(url)
+    -- try game:HttpGet
+    local ok, res = pcall(function() return game:HttpGet(url) end)
+    if ok and res and res ~= "" then return res end
+
+    -- try common exploit request wrappers
+    local wrappers = {
+        function(u) if syn and syn.request then return syn.request({Url = u, Method = "GET"}).Body end end,
+        function(u) if http and http.request then return http.request({Url = u, Method = "GET"}).Body end end,
+        function(u) if request then return request({Url = u, Method = "GET"}).Body end end,
+        function(u) if http_request then return http_request({Url = u, Method = "GET"}).Body end end,
+    }
+    for _,fn in ipairs(wrappers) do
+        local ok2, res2 = pcall(fn, url)
+        if ok2 and res2 and res2 ~= "" then return res2 end
+    end
+    return nil
+end
+
+local Rayfield
+local loaderSources = {
+    "https://raw.githubusercontent.com/uchil404/fish-it/refs/heads/main/fish_it_premiumV1_script.lua",
+    "https://raw.githubusercontent.com/shlexware/Rayfield/main/source"
+}
+for _, src in ipairs(loaderSources) do
+    local body = fetchUrl(src)
+    if body then
+        local ok, ret = pcall(function() return loadstring(body)() end)
+        if ok and ret then
+            Rayfield = ret
+            break
+        end
+    end
+end
+if not Rayfield then
+    warn("Failed to load Rayfield UI from known sources. GUI features may not work.")
+    Rayfield = {}
+    Rayfield.CreateWindow = function() error("Rayfield not loaded") end
+end
+
+-- Prevent double-run when re-executing in the same session
+if getgenv().FishItLoaded then
+    warn("Fish It script already running in this environment. Aborting duplicate load.")
+    return
+end
+getgenv().FishItLoaded = true
+
+-- Wait for LocalPlayer (helps when executing immediately after attach)
+local Players = game:GetService("Players")
+if not Players.LocalPlayer then
+    repeat task.wait() until Players.LocalPlayer
 end
 
 -- Services
@@ -47,7 +92,10 @@ end})
 SettingsTab:CreateToggle({Name="Anti AFK",CurrentValue=false,Callback=function(val)
     getgenv().AntiAFK=val
     if val then
-        for i,v in pairs(getconnections(LocalPlayer.Idled)) do v:Disable() end
+        -- getconnections may not be available in all executors; guard with pcall
+        pcall(function()
+            for i,v in pairs(getconnections(LocalPlayer.Idled)) do v:Disable() end
+        end)
     end
     -- Perfect Cast System
     local lastCastTime = 0
@@ -98,23 +146,6 @@ local function findRod()
         rod = LocalPlayer.Character:FindFirstChild("Fishing Rod") 
     end
     return rod
-    FishingTab:CreateToggle({
-        Name = "Auto Perfect Cast",
-        CurrentValue = false,
-        Callback = function(val)
-            getgenv().AutoPerfectCast = val
-            if val then
-                local connection = RunService.Heartbeat:Connect(function()
-                    if not getgenv().AutoPerfectCast then return end
-                
-                    if isPerfectCastTime() then
-                        doPerfectCast()
-                    end
-                end)
-                table.insert(getgenv().CleanupConnections, connection)
-            end
-        end
-    })
 end
 
 local function randomDelay(base, variance)
@@ -171,6 +202,57 @@ FishingTab:CreateToggle({
     end
 })
 
+-- Auto Perfect Cast UI (moved to proper place)
+FishingTab:CreateToggle({
+    Name = "Auto Perfect Cast",
+    CurrentValue = false,
+    Callback = function(val)
+        getgenv().AutoPerfectCast = val
+        if val then
+            local connection = RunService.Heartbeat:Connect(function()
+                if not getgenv().AutoPerfectCast then return end
+                if isPerfectCastTime() then
+                    doPerfectCast()
+                end
+            end)
+            table.insert(getgenv().CleanupConnections, connection)
+        end
+    end
+})
+
+-- Import Locations UI
+local importBox
+-- Rayfield sometimes has CreateInput/CreateTextBox; attempt to create an input, else fallback to button-based import using getgenv().ImportedLocations
+local createdInput = pcall(function()
+    importBox = TeleportTab:CreateInput({Name = "Import Locations (Name,x,y,z per line)", Placeholder = "Paste locations here...", Value = ""})
+end)
+
+if not createdInput then
+    -- fallback: create a small button that reads from getgenv().ImportedLocations string
+    TeleportTab:CreateLabel({Name = "Import Locations: paste to getgenv().ImportedLocations as multiline string"})
+end
+
+TeleportTab:CreateButton({Name = "Apply Import", Callback = function()
+    local raw = nil
+    if importBox and importBox.Value then raw = importBox.Value end
+    if (not raw) and getgenv().ImportedLocations then raw = getgenv().ImportedLocations end
+    if not raw or raw == "" then return end
+
+    for line in raw:gmatch("[^
+]+") do
+        local name,x,y,z = line:match("^%s*(.-)%s*,%s*([%-%d%.]+)%s*,%s*([%-%d%.]+)%s*,%s*([%-%d%.]+)%s*$")
+        if name and x and y and z then
+            local vx = tonumber(x)
+            local vy = tonumber(y)
+            local vz = tonumber(z)
+            if vx and vy and vz then
+                Locations[name] = Vector3.new(vx,vy,vz)
+                -- create button for new location
+                TeleportTab:CreateButton({Name = "Teleport "..name, Callback = function() if LocalPlayer.Character then pcall(function() LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(Vector3.new(vx,vy,vz)) end) end end})
+            end
+        end
+    end
+end})
 FishingTab:CreateToggle({
     Name = "Auto Perfect",
     CurrentValue = false,
